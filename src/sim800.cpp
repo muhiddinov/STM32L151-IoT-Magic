@@ -2,9 +2,8 @@
 #include "sim800.h"
 #include <Arduino.h>
 
-HardwareSerial Serial3(PB11, PB10);
-
-#define SerialMon Serial3
+extern HardwareSerial SerialMON;
+extern HardwareSerial SerialSIM;
 
 void SIM800::sleep() {
   _responseOK("AT+CFUN=4");
@@ -18,26 +17,29 @@ void SIM800::wakeup() {
 }
 
 uint8_t SIM800::begin(uint32_t baudrate) {
-  Serial1.begin(baudrate);
-  SerialMon.begin(baudrate);
-  uint32_t timeout = millis();
+  SerialMON.end();
+  SerialSIM.end();
+  SerialSIM.begin(baudrate);
+  SerialMON.begin(baudrate);
   _responseOK("AT+CFUN=1");
   _responseOK("AT");
   _responseOK("ATE0");
   _responseOK("AT+SAPBR=0,1");
   _internet = false;
-  _responseOK("AT+SAPBR=3,1,\"APN\",\"INTERNET\"");
+  _responseOK("AT+SAPBR=3,1,\"APN\",\"DEFAULT\"");
   _responseOK("AT+SAPBR=3,1,\"CONTYPE\",\"GPRS\"");
-  SIM800::getIMEI();
+  // SIM800::getIMEI();
+  // SerialMON.println(F("SIM800 is ready"));
   return _result_code;
 }
 
 uint8_t SIM800::checkPin() {
-  Serial1.println("AT+CPIN?");
+  SerialSIM.println("AT+CPIN?");
+  SerialSIM.flush();
   uint32_t time_out = millis();
   while (1) {
-    if (Serial1.available()) {
-      _readData = Serial1.readStringUntil('\n');
+    if (SerialSIM.available()) {
+      _readData = SerialSIM.readStringUntil('\n');
       if (_readData.indexOf("+CPIN: READY") >= 0) {
         _result_code = errors(READY);
         break;
@@ -54,11 +56,12 @@ uint8_t SIM800::checkPin() {
 }
 
 uint8_t SIM800::getRSSI() {
-  Serial1.println("AT+CSQ");
+  SerialSIM.println("AT+CSQ");
+  SerialSIM.flush();
   uint32_t timeout = millis();
   while (1) {
     if (millis() - timeout >= 2000) break;
-    _readData = Serial1.readStringUntil('\n');
+    _readData = SerialSIM.readStringUntil('\n');
     if (_readData.indexOf("+CSQ") >= 0) {
       int k = 0;
       sscanf(_readData.c_str(), "+CSQ: %d,%d", &_rssi, &k);
@@ -68,16 +71,18 @@ uint8_t SIM800::getRSSI() {
 }
 
 String SIM800::getIMEI() {
-  Serial1.println("AT+GSN");
+  SerialSIM.println("AT+GSN");
+  SerialSIM.flush();
   uint32_t resp_time = millis();
   while (1) {
-    if (Serial1.available()) {
-      _readData = Serial1.readStringUntil('\n');
+    if (SerialSIM.available()) {
+      _readData = SerialSIM.readStringUntil('\n');
       if (_readData.length() >= 7) {
         _readData.remove(_readData.length() - 1);
         _imei = _readData;
-        SerialMon.print("Device ID: ");
-        SerialMon.println(_imei);
+        SerialMON.print("Device ID: ");
+        SerialMON.println(_imei);
+        SerialMON.flush();
       }
       if (_readData.indexOf("OK") >= 0) {
         _result_code = errors(ok);
@@ -93,13 +98,17 @@ String SIM800::getIMEI() {
 }
 
 uint16_t SIM800::_responseOK(const char* cmd) {
-  Serial1.println(cmd);
-  SerialMon.println(cmd);
+  SerialSIM.println(cmd);
+  SerialSIM.flush();
+  SerialMON.println(cmd);
+  SerialMON.flush();
+  delay(500);
   uint32_t time_out = millis();
   while (1) {
-    if (Serial1.available()) {
-      _readData = Serial1.readStringUntil('\n');
-      SerialMon.println(_readData);
+    if (SerialSIM.available()) {
+      _readData = SerialSIM.readStringUntil('\n');
+      SerialMON.println(_readData);
+      SerialMON.flush();
       if (_readData.indexOf("OK") >= 0 || _readData.indexOf("ERROR") >= 0) {
         _result_code = errors(ok);
         break;
@@ -114,13 +123,16 @@ uint16_t SIM800::_responseOK(const char* cmd) {
 }
 
 uint16_t SIM800::_responseGET(const char* cmd) {
-  Serial1.println(cmd);
-  SerialMon.println(cmd);
+  SerialSIM.println(cmd);
+  SerialSIM.flush();
+  SerialMON.println(cmd);
+  SerialMON.flush();
   uint32_t time_out = millis();
   while (1) {
-    if (Serial1.available()) {
-      _readData = Serial1.readStringUntil('\n');
-      SerialMon.println(_readData);
+    if (SerialSIM.available()) {
+      _readData = SerialSIM.readStringUntil('\n');
+      SerialMON.println(_readData);
+      SerialMON.flush();
       if (_readData.indexOf("+HTTPACTION") >= 0) {
         int method = 0, datalen = 0, resp = 0;
         sscanf(_readData.c_str(), "+HTTPACTION: %d,%d,%d", &method, &resp, &datalen);
@@ -137,18 +149,22 @@ uint16_t SIM800::_responseGET(const char* cmd) {
 }
 
 uint16_t SIM800::httpGet(const char* url) {
-  SerialMon.print("URL:");
-  SerialMon.println(url);
+  SerialMON.print("URL:");
+  SerialMON.println(url);
+  SerialMON.flush();
   _responseOK("AT+HTTPINIT");
   _responseOK("AT+HTTPSSL=0");
   _responseOK("AT+HTTPPARA=\"CID\",1");
-  Serial1.print("AT+HTTPPARA=\"URL\",\"");
-  Serial1.print(url);
-  Serial1.println("\"");
+  SerialSIM.print("AT+HTTPPARA=\"URL\",\"");
+  SerialSIM.flush();
+  SerialSIM.print(url);
+  SerialSIM.flush();
+  SerialSIM.println("\"");
+  SerialSIM.flush();
   uint32_t timeout = millis();
   while (1) {
-    if (Serial1.available()) {
-      String str = Serial1.readStringUntil('\n');
+    if (SerialSIM.available()) {
+      String str = SerialSIM.readStringUntil('\n');
       if (str.indexOf("OK") || str.indexOf("ERROR")) {
         break;
       }
@@ -163,18 +179,19 @@ uint16_t SIM800::httpGet(const char* url) {
 }
 
 uint16_t SIM800::httpsGet(const char* url) {
-//  SerialMon.print("URL:");
-//  SerialMon.println(url);
+//  SerialMON.print("URL:");
+//  SerialMON.println(url);
   _responseOK("AT+HTTPINIT");
   _responseOK("AT+HTTPSSL=1");
   _responseOK("AT+HTTPPARA=\"CID\",1");
-  Serial1.print("AT+HTTPPARA=\"URL\",\"");
-  Serial1.print(url);
-  Serial1.println("\"");
+  SerialSIM.print("AT+HTTPPARA=\"URL\",\"");
+  SerialSIM.print(url);
+  SerialSIM.println("\"");
+  SerialSIM.flush();
   uint32_t timeout = millis();
   while (1) {
-    if (Serial1.available()) {
-      String str = Serial1.readStringUntil('\n');
+    if (SerialSIM.available()) {
+      String str = SerialSIM.readStringUntil('\n');
       if (str.indexOf("OK") || str.indexOf("ERROR")) {
         break;
       }
@@ -212,13 +229,14 @@ bool SIM800::getInternetStatus() {
 }
 
 String SIM800::getIPAddress() {
-  Serial1.println(F("AT+SAPBR=2,1"));
+  SerialSIM.println(F("AT+SAPBR=2,1"));
+  SerialSIM.flush();
   uint32_t timeout = millis();
   while (1) {
     if (millis() - timeout >= 2000) {
       break;
     }
-    _readData = Serial1.readStringUntil('\n');
+    _readData = SerialSIM.readStringUntil('\n');
     if (_readData.indexOf("+SAPBR:") >= 0) {
       int k = 0, i = 0;
       sscanf(_readData.c_str(), "+SAPBR: %d,%d,\"%s\"", &k, &i, _wlan_ip_addr);
@@ -231,11 +249,12 @@ String SIM800::getIPAddress() {
 }
 
 uint16_t SIM800::getBattVoltage() {
-  Serial1.println("AT+CBC");
+  SerialSIM.println("AT+CBC");
+  SerialSIM.flush();
   uint32_t timeout = millis();
   while (1) {
     if (millis() - timeout >= 2000) break;
-    _readData = Serial1.readStringUntil('\n');
+    _readData = SerialSIM.readStringUntil('\n');
     if (_readData.indexOf("+CBC") >= 0) {
       int k = sscanf(_readData.c_str(), "+CBC: 0,%d,%d", &_batt_percent, &_batt_voltage);
     }
@@ -244,11 +263,12 @@ uint16_t SIM800::getBattVoltage() {
 }
 
 uint8_t SIM800::getBattPercent() {
-  Serial1.println("AT+CBC");
+  SerialSIM.println("AT+CBC");
+  SerialSIM.flush();
   uint32_t timeout = millis();
   while (1) {
     if (millis() - timeout >= 2000) break;
-    _readData = Serial1.readStringUntil('\n');
+    _readData = SerialSIM.readStringUntil('\n');
     if (_readData.indexOf("+CBC") >= 0) {
       int k = sscanf(_readData.c_str(), "+CBC: 0,%d,%d", &_batt_percent, &_batt_voltage);
     }
