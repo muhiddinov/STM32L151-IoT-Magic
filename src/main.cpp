@@ -2,15 +2,15 @@
 #include <Arduino.h>
 #include "sim800.h"
 
-HardwareSerial SerialMON(PB7, PB6);
-HardwareSerial SerialSIM(PA3, PA2);
-HardwareSerial SerialUS(PB11, PB10);
+HardwareSerial SerialSIM(PB7, PB6);
+HardwareSerial SerialMON(PA10, PA9);
+HardwareSerial SerialUS(PA3, PA2);
 
 SIM800 sim800;
 
-#define GSM_PWR_PIN PB3
-#define V33_PWR_PIN PB4
-#define V42_PWR_PIN PB5
+#define GSM_PWR_PIN PB8
+#define V33_PWR_PIN PA11
+#define V42_PWR_PIN PA12
 #define uS_TO_S 1000000
 #define mS_TO_S 1000
 #define SECONDS_IN_HOUR 3600 // seconds in an hour
@@ -93,9 +93,9 @@ void setup() {
   delay(1000);
   // digitalWrite(V33_PWR_PIN, 0);
   // digitalWrite(V42_PWR_PIN, 0);
-  // digitalWrite(GSM_PWR_PIN, 1);
-  // delay(2000);
-  // digitalWrite(GSM_PWR_PIN, 0);
+  digitalWrite(GSM_PWR_PIN, 1);
+  delay(2000);
+  digitalWrite(GSM_PWR_PIN, 0); 
   SerialUS.begin(9600);
   SerialMON.begin(9600);
   SerialSIM.begin(9600);
@@ -104,8 +104,8 @@ void setup() {
   distance = float(getDistance()) / 10.0; // distance in cm
   SerialMON.print("Distance: ");
   SerialMON.println(distance);
-  http_task();
-  shutdown(TIME_SLEEP * SECONDS_IN_HOUR * mS_TO_S);
+  // http_task();
+  // shutdown(TIME_SLEEP * SECONDS_IN_HOUR * mS_TO_S);
 }
 
 void loop() {
