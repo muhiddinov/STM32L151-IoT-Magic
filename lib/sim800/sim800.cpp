@@ -21,6 +21,7 @@ uint8_t SIM800::begin(uint32_t baudrate) {
   SerialSIM.end();
   SerialSIM.begin(baudrate);
   SerialMON.begin(baudrate);
+  _responseOK("AT+CSCLK=0");
   _responseOK("AT+CFUN=1");
   _responseOK("AT");
   _responseOK("ATE0");
