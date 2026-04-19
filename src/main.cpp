@@ -29,7 +29,7 @@ int     DEVICE_TYPE  =  DEVICE_WELL;   // <-- change to DEVICE_CANAL for canal
 
 // How many times per day to send data (2–24).
 // Examples: 2→every 12h, 4→every 6h, 24→every hour
-#define SENDS_PER_DAY  1440 // every minutes
+#define SENDS_PER_DAY  24
 #define SLEEP_MS       (86400000UL / SENDS_PER_DAY)
 
 #define GPS_FIX_TIMEOUT_MS 120000UL   // first-boot GPS acquisition budget
