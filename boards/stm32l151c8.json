@@ -1,0 +1,17 @@
+{
+  "build": {
+    "cpu": "cortex-m3",
+    "f_cpu": "32000000L",
+    "mcu": "stm32l151c8t6",
+    "variant": "STM32L1xx"
+  },
+  "frameworks": ["arduino", "stm32cube"],
+  "name": "STM32L151C8T6 Custom",
+  "upload": {
+    "maximum_ram_size": 32768,
+    "maximum_size": 65536,
+    "protocol": "stlink"
+  },
+  "url": "https://www.st.com/",
+  "vendor": "ST"
+}
