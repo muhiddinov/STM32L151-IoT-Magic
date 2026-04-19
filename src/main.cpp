@@ -14,12 +14,12 @@ SIM7000G simcom(SerialSIM, &SerialMON);
 #define GSM_PWR_PIN  PB8   // modem power key (active-high pulse)
 #define V33_PWR_PIN  PA11  // 3.3V rail (HIGH=on)
 #define V42_PWR_PIN  PA12  // 4.2V rail for GSM (HIGH=on)
-#define WKUP_PIN     PC13  // button / wakeup (active-LOW, pull-up)
+#define WKUP_PIN     PC13  // Wake up pin for clear GPS data in EEPORM
 
 // ─── Device config ───────────────────────────────────────────────
 #define DEVICE_WELL     0
 #define DEVICE_CANAL    1
-#define DEVICE_TYPE    DEVICE_CANAL   // <-- change to DEVICE_CANAL for canal
+#define DEVICE_TYPE     DEVICE_CANAL   // <-- change to DEVICE_CANAL for canal
 
 // APN for your SIM card (e.g. "internet", "uzmobile", "ucell")
 #define APN            "internet"
@@ -29,9 +29,7 @@ SIM7000G simcom(SerialSIM, &SerialMON);
 #define SENDS_PER_DAY  1440
 #define SLEEP_MS       (86400000UL / SENDS_PER_DAY)
 
-#define LONG_PRESS_MS  3000    // hold > 3s = long press (save GPS)
-#define GPS_TRACK_SECS 120     // GPS mode auto-exit after 120s
-#define GPS_SEND_MS    5000    // GPS mode: send interval
+#define GPS_FIX_TIMEOUT_MS 120000UL   // first-boot GPS acquisition budget
 
 #define URL_SERVER     "http://aka.org.uz:7000/api/variable?"
 
@@ -74,10 +72,8 @@ static void goSleep(uint32_t ms) {
   digitalWrite(V33_PWR_PIN, LOW);
   digitalWrite(V42_PWR_PIN, LOW);
 
-  // Clear stale wakeup flag, then enable PC13 (WKUP2) wakeup.
-  // STM32L151 standby wakes on RISING edge only:
-  //   INPUT_PULLUP → normally HIGH, goes LOW on press, HIGH on release.
-  //   So MCU wakes when button is RELEASED (LOW→HIGH transition).
+  // RTC-only wake from standby. LowPower.shutdown() sets the RTC wakeup timer
+  // and enters standby; MCU resets on wake.
   LowPower.shutdown(ms);
   NVIC_SystemReset();
 }
@@ -201,83 +197,13 @@ static void sendData(float lat, float lon,
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Mode: short press — GPS tracking (send live coords every 5s)
-// ─────────────────────────────────────────────────────────────────
-
-static void gpsTrackingMode() {
-  SerialMON.println("=== GPS TRACKING ===");
-  if (!gsmInit()) { gsmPowerOff(); return; }
-
-  simcom.enableGPS();
-
-  uint8_t  batt = simcom.getBattPercent();
-  uint8_t  rssi = simcom.getRSSI();
-  uint32_t ts   = simcom.getUnixTime();
-
-  uint32_t mode_end = millis() + (uint32_t)GPS_TRACK_SECS * 1000UL;
-  uint32_t last_tx  = 0;
-  bool     gps_ok   = false;
-
-  SerialMON.println("Waiting for GPS fix...");
-
-  while (millis() < mode_end) {
-    float lat = 0.0f, lon = 0.0f;
-    if (simcom.getGPS(&lat, &lon)) {
-      if (!gps_ok) { SerialMON.println("GPS fixed"); gps_ok = true; }
-      if (millis() - last_tx >= GPS_SEND_MS) {
-        uint16_t level = readWaterLevel();
-        sendData(lat, lon, batt, rssi, 0, 0.0f, level, ts);
-        ts      += GPS_SEND_MS / 1000;
-        last_tx  = millis();
-      }
-    }
-    delay(500);
-  }
-
-  simcom.disableGPS();
-  gsmPowerOff();
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Mode: long press — get GPS fix and save to EEPROM
-// ─────────────────────────────────────────────────────────────────
-
-static void gpsSaveMode() {
-  SerialMON.println("=== GPS SAVE ===");
-  if (!gsmInit()) { gsmPowerOff(); return; }
-
-  simcom.enableGPS();
-  SerialMON.println("Waiting for GPS fix (90s max)...");
-
-  float lat = 0.0f, lon = 0.0f;
-  uint32_t t = millis();
-  while (millis() - t < 90000UL) {
-    if (simcom.getGPS(&lat, &lon)) {
-      saveGPS(lat, lon);
-      break;
-    }
-    delay(2000);
-  }
-
-  if (lat == 0.0f && lon == 0.0f)
-    SerialMON.println("GPS fix failed");
-
-  simcom.disableGPS();
-  gsmPowerOff();
-}
-
-// ─────────────────────────────────────────────────────────────────
-// Mode: normal scheduled wake — read sensors and send to server
+// Mode: scheduled RTC wake — read sensors and send to server.
+// On first run (no GPS in EEPROM) acquire a fix via SIM7000G and
+// persist it; subsequent runs reuse the stored coordinates.
 // ─────────────────────────────────────────────────────────────────
 
 static void normalDataMode() {
   SerialMON.println("=== NORMAL DATA ===");
-
-  if (!loadGPS(&s_lat, &s_lon)) {
-    SerialMON.println("No GPS in EEPROM, use default");
-    s_lat = 41.299496f;  // default: Tashkent area
-    s_lon = 69.240073f;
-  }
 
   uint16_t level = readWaterLevel();
   float    temp  = readTemperature();
@@ -290,6 +216,30 @@ static void normalDataMode() {
   }
 
   if (!gsmInit()) { gsmPowerOff(); return; }
+
+  if (loadGPS(&s_lat, &s_lon)) {
+    SerialMON.print("GPS from EEPROM: ");
+    SerialMON.print(s_lat, 6); SerialMON.print(", "); SerialMON.println(s_lon, 6);
+  } else {
+    SerialMON.println("No GPS in EEPROM, acquiring fix...");
+    simcom.enableGPS();
+    uint32_t t0 = millis();
+    bool got = false;
+    while (millis() - t0 < GPS_FIX_TIMEOUT_MS) {
+      if (simcom.getGPS(&s_lat, &s_lon)) {
+        saveGPS(s_lat, s_lon);
+        got = true;
+        break;
+      }
+      delay(2000);
+    }
+    simcom.disableGPS();
+    if (!got) {
+      SerialMON.println("GPS fix failed, skip send");
+      gsmPowerOff();
+      return;
+    }
+  }
 
   uint8_t  batt = simcom.getBattPercent();
   uint8_t  rssi = simcom.getRSSI();
@@ -313,6 +263,7 @@ void setup() {
   pinMode(GSM_PWR_PIN, OUTPUT);
   pinMode(WKUP_PIN, INPUT_PULLUP);
 
+
   digitalWrite(V33_PWR_PIN, LOW);
   digitalWrite(V42_PWR_PIN, LOW);
   digitalWrite(GSM_PWR_PIN, LOW);
@@ -320,54 +271,14 @@ void setup() {
   SerialMON.begin(115200);
   SerialSIM.begin(115200);
   LowPower.begin();
-
   SerialMON.println("\n--- BOOT ---");
-  bool from_button = false;
-  bool from_standby = true;
-  if (from_standby)
-    SerialMON.println(from_button ? "Wake: BUTTON" : "Wake: RTC");
-  else
-    SerialMON.println("Wake: COLD BOOT");
 
-  // ── Diagnostic passthrough: cold boot + hold PC13 5s ────────────
-  if (!from_standby && digitalRead(WKUP_PIN) == LOW) {
-    uint32_t t0 = millis();
-    while (digitalRead(WKUP_PIN) == LOW && millis() - t0 < 5000);
-    if (millis() - t0 >= 5000) {
-      SerialMON.println("=== AT PASSTHROUGH ===");
-      gsmPowerOn();
-      while (true) {
-        if (SerialMON.available()) {
-          String cmd = SerialMON.readStringUntil('\n');
-          cmd.trim();
-          SerialSIM.println(cmd);
-          SerialSIM.flush();
-        }
-        while (SerialSIM.available()) SerialMON.write(SerialSIM.read());
-      }
-    }
+  EEPROM.begin();
+  if (digitalRead(WKUP_PIN) == LOW) {
+    EEPROM.put(EEPROM_MAGIC, 0x00);
   }
 
-  if (from_standby && from_button) {
-    SerialMON.println("Press again within 3s to save GPS to EEPROM...");
-    bool second = false;
-    uint32_t t0 = millis();
-    while (millis() - t0 < LONG_PRESS_MS) {
-      if (digitalRead(WKUP_PIN) == LOW) {
-        delay(30);
-        if (digitalRead(WKUP_PIN) == LOW) {
-          second = true;
-          while (digitalRead(WKUP_PIN) == LOW);
-          break;
-        }
-      }
-    }
-    SerialMON.println(second ? "-> GPS SAVE" : "-> GPS TRACKING");
-    if (second) gpsSaveMode();
-    else        gpsTrackingMode();
-  } else {
-    normalDataMode();
-  }
+  normalDataMode();
 
   goSleep(SLEEP_MS);
 }
