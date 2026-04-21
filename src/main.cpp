@@ -18,6 +18,8 @@ SIM7000G simcom(SerialSIM);
 #define WKUP_PIN     PC13  // Wake up pin for clear GPS data in EEPORM
 #define TDS_PIN      PB1   // TDS sensor pin
 #define NTC_PIN      PB0   // NTC sensor pin
+#define LVL_ADC_PIN  PB14  // Water level sensor 4-20mA read pin
+#define MAH_ADC_PIN  PB15  // 4-20mA read pin
 
 // ─── Device config ───────────────────────────────────────────────
 #define DEVICE_WELL     0
@@ -143,6 +145,24 @@ static uint16_t readWaterLevel() {
   }
   digitalWrite(V33_PWR_PIN, LOW);
   return (cnt > 0) ? (uint16_t)(sum / cnt) : 0;
+}
+
+uint32_t readWaterLevelFromADC(uint8_t adc_pin) {
+  // read 4-20mA sensor
+  uint32_t adc_avg = 0;
+  uint8_t simple_count = 30;
+  for (uint8_t x = 0; x < simple_count; x++) {
+    adc_avg = (adc_avg + analogRead(adc_pin)) / 2;
+  }
+  float voltage = float(adc_avg / 4096.0) * 3.3;
+  // Sensor voltage 12VDC
+  // Shunt resistor value is 150 ohm
+  // I = U/R -> R_min = 4mA = 0.004A and R_max = 20mA = 0.02A
+  // U_min = 0.004 * 150 = 0.6V
+  // U_max = 0.02 * 150 = 3.0V
+  // Sensor measure values from 0 - 5000mm
+  // from 600mV to 3000mV equal to [0-5000]
+  return map(long(voltage * 1000), 600, 3000, 0, 5000);
 }
 
 // Returns TDS in ppm.
@@ -301,7 +321,7 @@ static void normalDataMode() {
   uint16_t level = readWaterLevel();
   float    temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
   uint16_t tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN) : 0;
-
+  level          = (DEVICE_TYPE == DEVICE_WELL) ? readWaterLevelFromADC(LVL_ADC_PIN) : 0; 
   // SerialMON.print("Level mm: "); SerialMON.println(level);
   // if (DEVICE_TYPE == DEVICE_WELL) {
     // SerialMON.print("Temp:     "); SerialMON.println(temp);
