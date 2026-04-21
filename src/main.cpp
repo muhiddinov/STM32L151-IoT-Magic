@@ -349,8 +349,8 @@ static void normalDataMode() {
     simcom.disableGPS();
     if (!got) {
       // SerialMON.println("GPS fix failed, skip send");
-      gsmPowerOff();
-      return;
+      s_lat = 40.08111;
+      s_lon = 65.9059;
     }
   }
 
