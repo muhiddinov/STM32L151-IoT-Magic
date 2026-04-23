@@ -286,25 +286,27 @@ static void sendData(float lat, float lon,
                      uint16_t tds, float temp,
                      uint16_t level, uint32_t ts) {
   char url[300];
-  char latStr[15], lonStr[15], tempStr[10];
+  char latStr[15], lonStr[15], tempStr[10], levelStr[10], tdsStr[10];
 
   // float -> string
   dtostrf(lat,  0, 6, latStr);   // 6 ta kasr
   dtostrf(lon,  0, 6, lonStr);
-  dtostrf(temp, 0, 1, tempStr);  // 1 ta kasr
+  dtostrf(temp, 0, 2, tempStr);  // 1 ta kasr
+  dtostrf(float(level/1000.0), 0, 3, levelStr); // metrda jo'natadi.
+  dtostrf(float(tds/1000.0), 0, 3, tdsStr); // gramm/Litr birlikda jo'natadi
 
   if (DEVICE_TYPE == DEVICE_WELL) {
     snprintf(url, sizeof(url),
       "%simei=%s&lat=%s&long=%s&battery=%d&rssi=%d"
-      "&tds=%d&temp_water=%s&level_water=%d&datetime=%lu&type=well",
+      "&tds=%s&temp_water=%s&level_water=%s&datetime=%lu&type=well",
       URL_SERVER, s_imei.c_str(),
-      latStr, lonStr, batt, rssi, tds, tempStr, level, (unsigned long)ts);
+      latStr, lonStr, batt, rssi, tdsStr, tempStr, levelStr, (unsigned long)ts);
   } else {
     snprintf(url, sizeof(url),
       "%simei=%s&lat=%s&long=%s&battery=%d&rssi=%d"
-      "&level_water=%d&datetime=%lu&type=canal",
+      "&level_water=%s&datetime=%lu&type=canal",
       URL_SERVER, s_imei.c_str(),
-      latStr, lonStr, batt, rssi, level, (unsigned long)ts);
+      latStr, lonStr, batt, rssi, levelStr, (unsigned long)ts);
   }
   simcom.httpGet(url);
 }
