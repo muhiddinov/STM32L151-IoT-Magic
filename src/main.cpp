@@ -320,7 +320,7 @@ static void normalDataMode() {
 
   uint16_t level = readWaterLevel();
   float    temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
-  uint16_t tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN) : 0;
+  uint16_t tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN, temp) : 0;
   level          = (DEVICE_TYPE == DEVICE_WELL) ? readWaterLevelFromADC(LVL_ADC_PIN) : 0; 
   // SerialMON.print("Level mm: "); SerialMON.println(level);
   // if (DEVICE_TYPE == DEVICE_WELL) {
