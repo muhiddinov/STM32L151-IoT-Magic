@@ -5,11 +5,11 @@
 
 // ─── Serial ports ────────────────────────────────────────────────
 // HardwareSerial Serial2(PA3, PA2);
-// HardwareSerial SerialMON(PA10, PA9);
+HardwareSerial SerialMON(PA3, PA2);
 HardwareSerial SerialSIM(PB7, PB6);
-HardwareSerial SerialUS(PA3, PA2);
+// HardwareSerial SerialUS(PA3, PA2);
 
-SIM7000G simcom(SerialSIM);
+SIM7000G simcom(SerialSIM, &SerialMON);
 
 // ─── Pins ────────────────────────────────────────────────────────
 #define GSM_PWR_PIN  PB8   // modem power key (active-high pulse)
@@ -57,7 +57,7 @@ static String s_imei = "";
 // ====== Kalibrlash konstantalari ======
 // Ushbu qiymatlarni standart eritma bilan (masalan 1413 µS/cm KCl) tekshirib moslang
 float K_CELL     = 1.00;            // Zond konstantasi (cm⁻¹)
-float TDS_FACTOR = 0.50;            // EC→TDS: NaCl=0.5, aralash=0.64, KCl=0.7
+float TDS_FACTOR = 0.64;            // EC→TDS: NaCl=0.5, aralash=0.64, KCl=0.7
 float CALIB_GAIN = 1.00;            // Umumiy kalibrlash koeffitsienti
 
 
@@ -122,29 +122,30 @@ static bool loadGPS(float* lat, float* lon) {
 
 // Returns water level in mm (ultrasonic UART sensor)
 static uint16_t readWaterLevel() {
-  SerialUS.begin(9600);
-  digitalWrite(V33_PWR_PIN, HIGH);
-  delay(1500);
+  // SerialUS.begin(9600);
+  // digitalWrite(V33_PWR_PIN, HIGH);
+  // delay(1500);
 
-  uint32_t sum = 0;
-  uint8_t  cnt = 0;
-  uint8_t  buf[3];
-  uint32_t t = millis();
+  // uint32_t sum = 0;
+  // uint8_t  cnt = 0;
+  // uint8_t  buf[3];
+  // uint32_t t = millis();
 
-  while (millis() - t < 5000) {
-    if (SerialUS.available()) {
-      uint8_t head = SerialUS.read();
-      if (head != 0xFF) continue;           // wait for frame start
-      if (SerialUS.readBytes(buf, 3) == 3) {
-        uint16_t d = ((uint16_t)buf[0] << 8) | buf[1];
-        uint8_t  cs = (0xFF + buf[0] + buf[1]) & 0xFF;
-        if (cs == buf[2] && d > 0) { sum += d; cnt++; }
-      }
-      DEVICE_TYPE = DEVICE_CANAL;
-    }
-  }
-  digitalWrite(V33_PWR_PIN, LOW);
-  return (cnt > 0) ? (uint16_t)(sum / cnt) : 0;
+  // while (millis() - t < 5000) {
+  //   if (SerialUS.available()) {
+  //     uint8_t head = SerialUS.read();
+  //     if (head != 0xFF) continue;           // wait for frame start
+  //     if (SerialUS.readBytes(buf, 3) == 3) {
+  //       uint16_t d = ((uint16_t)buf[0] << 8) | buf[1];
+  //       uint8_t  cs = (0xFF + buf[0] + buf[1]) & 0xFF;
+  //       if (cs == buf[2] && d > 0) { sum += d; cnt++; }
+  //     }
+  //     DEVICE_TYPE = DEVICE_CANAL;
+  //   }
+  // }
+  // digitalWrite(V33_PWR_PIN, LOW);
+  // return (cnt > 0) ? (uint16_t)(sum / cnt) : 0;
+  return 0;
 }
 
 uint32_t readWaterLevelFromADC(uint8_t adc_pin) {
@@ -154,7 +155,9 @@ uint32_t readWaterLevelFromADC(uint8_t adc_pin) {
   for (uint8_t x = 0; x < simple_count; x++) {
     adc_avg = (adc_avg + analogRead(adc_pin)) / 2;
   }
-  float voltage = float(adc_avg / 4096.0) * 3.3;
+  SerialMON.print("ADC avg: "); SerialMON.println(adc_avg);
+  uint32_t voltage = uint32_t(float(adc_avg / 4096.0) * 3300);  // ADC ni voltga aylantirish (mV)
+  SerialMON.print("Voltage: "); SerialMON.println(voltage);
   // Sensor voltage 12VDC
   // Shunt resistor value is 150 ohm
   // I = U/R -> R_min = 4mA = 0.004A and R_max = 20mA = 0.02A
@@ -162,63 +165,77 @@ uint32_t readWaterLevelFromADC(uint8_t adc_pin) {
   // U_max = 0.02 * 150 = 3.0V
   // Sensor measure values from 0 - 5000mm
   // from 600mV to 3000mV equal to [0-5000]
-  return map(long(voltage * 1000), 600, 3000, 0, 5000);
+  return map(voltage, 600, 3000, 0, 5000);
 }
 
-// Returns TDS in ppm.
-// TODO: connect TDS probe to an ADC pin and calibrate.
-// ================================================================
-//  ASOSIY FUNKSIYA: ADC dan PPM gacha
-// ================================================================
-
 float readTDS(uint8_t adc_pin, float temperature_C = 25.0) {
+    // --- Sxema konstantalari (haqiqiy sxemadan) ---
+    const float V_CC         = 3.0;        // Dual supply (±3.0V), not ADC_VREF
+    const float G_DRIVER     = 0.068;      // R48/R49 = 6.8k/100k  (U14.1)
+    const float V_TDS_N_PK   = G_DRIVER * V_CC / 2.0;  // ≈ 0.102 V peak
+    const float G_SENSE      = 100.0;      // R57/R54 = 1M/10k  (U14.3 gain!)
+    const float R_SENSE      = 5600.0;     // R53 (Ω)
+    const float RECT_COEFF   = 0.6366;     // 2/π (full-wave DC mean)
+    const int   SAMPLES      = 64;
 
-  // --- Sxema konstantalari (LM324 gain zanjiridan) ---
-  const float G_DRIVER    = 0.056;         // |R48/R49| = 5.6k/100k  (U14.1)
-  const float V_TDS_N_PK  = G_DRIVER * ADC_VREF / 2.0;  // ≈ 0.084 V
-  const float R_SENSE     = 5600.0;        // R53 qarshiligi (Ω)
-  const float RECT_COEFF  = 0.6366;        // 2/π — full-wave DC o'rtacha (U14.2+U14.4)
-  const int   SAMPLES     = 64;            // shovqin kamaytirish uchun
-
-  // --- 1-qadam: ADC ni o'rtacha qiymatda o'qish ---
-  long sum = 0;
-  for (int i = 0; i < SAMPLES; i++) {
-    sum += analogRead(adc_pin);
-    delayMicroseconds(100);
-  }
-  float adc_avg = (float)sum / SAMPLES;
-
-  // --- 2-qadam: ADC qiymatidan voltga aylantirish ---
-  float v_adc = (adc_avg / ADC_MAX_VALUE) * ADC_VREF;
-
-  // Shovqin pastki chegarasi (kuchlanish juda past = zond havoda yoki toza suv)
-  if (v_adc < 0.005) return 0.0;
-
-  // --- 3-qadam: Rektifikator koeffitsientini qaytarib, TDS_P amplitudasini tiklash ---
-  //  V_ADC = 0.637 × V_TDS_P,peak  →  V_TDS_P,peak = V_ADC / 0.637
-  float v_tds_p = v_adc / RECT_COEFF;
-
-  // --- 4-qadam: Voltage divider formulasidan zond qarshiligini hisoblash ---
-  //  V_TDS_P = V_TDS_N × R53 / (R53 + R_probe)
-  //  ⇒  R_probe = R53 × (V_TDS_N / V_TDS_P − 1)
-  if (v_tds_p >= V_TDS_N_PK) return 0.0;            // qisqa tutashuv himoyasi
-  float r_probe = R_SENSE * (V_TDS_N_PK / v_tds_p - 1.0);
-
-  // Mantiqsiz qiymatlar uchun himoya
-  if (r_probe <= 0.0 || r_probe > 1.0e7) return 0.0;
-
-  // --- 5-qadam: Elektro o'tkazuvchanlik (µS/cm) ---
-  //  EC (S/cm) = K_cell / R_probe;   1 S/cm = 1e6 µS/cm
-  float ec_uS_cm = (K_CELL / r_probe) * 1.0e6;
-
-  // --- 6-qadam: Temperatura kompensatsiyasi (25°C ga keltirish) ---
-  //  α ≈ 0.02 (2% har gradusga, aksariyat tuzlar uchun)
-  float ec_25 = ec_uS_cm / (1.0 + 0.02 * (temperature_C - 25.0));
-
-  // --- 7-qadam: EC (µS/cm) → TDS (ppm) + kalibrlash ---
-  float tds_ppm = ec_25 * TDS_FACTOR * CALIB_GAIN;
-
-  return tds_ppm;
+    // --- Tuz koeffitsienti (25°C da) ---
+    const float SALT_EC_PER_GL = 2000.0;   // NaCl; NaOH uchun 5500
+    
+    digitalWrite(V33_PWR_PIN, HIGH);
+    delay(1000);
+    
+    // 1. ADC ni o'rtacha qiymatda o'qish
+    long sum = 0;
+    for (int i = 0; i < SAMPLES; i++) {
+        sum += analogRead(adc_pin);
+        delayMicroseconds(100);
+    }
+    float adc_avg = (float)sum / SAMPLES;
+    float v_adc = (adc_avg / ADC_MAX_VALUE) * ADC_VREF;
+    
+    SerialMON.print("V_ADC:       "); SerialMON.print(v_adc, 4); SerialMON.println(" V");
+    
+    if (v_adc < 0.005) {
+        digitalWrite(V33_PWR_PIN, LOW);
+        return 0.0;
+    }
+    
+    // 2. Rectifier koeffitsientini qaytarish (DC o'rtacha → AC peak)
+    float v_rect_pk = v_adc / RECT_COEFF;
+    
+    // 3. U14.3 gain ni qaytarish (100 marta kamaytirish)
+    float v_tds_p = v_rect_pk / G_SENSE;
+    SerialMON.print("V_TDS_P:     "); SerialMON.print(v_tds_p * 1000, 2); SerialMON.println(" mV");
+    
+    // 4. Qisqa tutashuv himoyasi
+    if (v_tds_p >= V_TDS_N_PK) {
+        SerialMON.println("OGOHLANTIRISH: qisqa tutashuv?");
+        digitalWrite(V33_PWR_PIN, LOW);
+        return 0.0;
+    }
+    
+    // 5. Voltage divider formulasidan R_probe
+    float r_probe = R_SENSE * (V_TDS_N_PK / v_tds_p - 1.0);
+    SerialMON.print("R_probe:     "); SerialMON.print(r_probe, 1); SerialMON.println(" Ohm");
+    
+    if (r_probe <= 0.0 || r_probe > 1.0e7) {
+        digitalWrite(V33_PWR_PIN, LOW);
+        return 0.0;
+    }
+    
+    // 6. R_probe → EC (µS/cm)
+    float ec_uS_cm = (K_CELL / r_probe) * 1.0e6;
+    
+    // 7. Temperatura kompensatsiyasi (25°C ga keltirish)
+    float ec_25 = ec_uS_cm / (1.0 + 0.02 * (temperature_C - 25.0));
+    SerialMON.print("EC @25°C:    "); SerialMON.print(ec_25, 1); SerialMON.println(" uS/cm");
+    
+    // 8. EC → Konsentratsiya (g/L)
+    float concentration_g_L = ec_25 / SALT_EC_PER_GL;
+    SerialMON.print("Conc:        "); SerialMON.print(concentration_g_L, 4); SerialMON.println(" g/L");
+    
+    digitalWrite(V33_PWR_PIN, LOW);
+    return concentration_g_L;
 }
 
 float readNTC_celsius(uint8_t adc_pin) {
@@ -229,6 +246,8 @@ float readNTC_celsius(uint8_t adc_pin) {
   const float T_NOMINAL  = 298.15;   // 25°C Kelvinda (25 + 273.15)
   const float BETA       = 3950.0;   // Beta koeffitsient (NTC datasheet dan!)
   const int   SAMPLES    = 32;
+  digitalWrite(V33_PWR_PIN, HIGH);
+  delay(1000);  // NTC va ADC zanjirini barqarorlashtirish uchun
 
   // --- 1-qadam: Shovqinni kamaytirish uchun o'rtacha ADC ---
   long sum = 0;
@@ -240,7 +259,6 @@ float readNTC_celsius(uint8_t adc_pin) {
 
   // --- 2-qadam: ADC → Volt ---
   float v_adc = (adc_avg / ADC_MAX) * ADC_VREF;
-
   // Himoya: NTC uzilgan (V ≈ 3.3V) yoki qisqa tutashuv (V ≈ 0V)
   if (v_adc < 0.01 || v_adc > ADC_VREF - 0.01) return NAN;
 
@@ -255,6 +273,7 @@ float readNTC_celsius(uint8_t adc_pin) {
   float t_kelvin = 1.0 / (1.0/T_NOMINAL + log(r_ntc/R_NOMINAL) / BETA);
 
   // --- 5-qadam: Kelvin → Celsius ---
+  digitalWrite(V33_PWR_PIN, LOW);
   return t_kelvin - 273.15;
 }
 
@@ -266,14 +285,14 @@ static bool gsmInit() {
   gsmPowerOn();
   uint8_t res = simcom.begin(115200);
   if (res == 10) {  // errors::timeout — modem not responding
-    // SerialMON.println("GSM: no modem, skip");
+    SerialMON.println("GSM: no modem, skip");
     return false;
   }
   simcom.setAPN(APN);
   simcom.openBearer();
   s_imei = simcom.getIMEI();
   String ip = simcom.getIPAddress();
-  // SerialMON.println("IP: " + ip);
+  SerialMON.println("IP: " + ip);
   return simcom.getInternetStatus();
 }
 
@@ -318,31 +337,32 @@ static void sendData(float lat, float lon,
 // ─────────────────────────────────────────────────────────────────
 
 static void normalDataMode() {
-  // SerialMON.println("=== NORMAL DATA ===");
+  SerialMON.println("=== NORMAL DATA ===");
 
-  uint16_t level = readWaterLevel();
+  uint32_t level = readWaterLevel();
   float    temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
-  uint16_t tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN, temp) : 0;
+  SerialMON.print("Temp °C: "); SerialMON.println(temp);
+  float tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN, temp) : 0.0;
+  SerialMON.print("TDS ppm:  "); SerialMON.println(tds, 2);
   level          = (DEVICE_TYPE == DEVICE_WELL) ? readWaterLevelFromADC(LVL_ADC_PIN) : 0; 
-  // SerialMON.print("Level mm: "); SerialMON.println(level);
-  // if (DEVICE_TYPE == DEVICE_WELL) {
-    // SerialMON.print("Temp:     "); SerialMON.println(temp);
-    // SerialMON.print("TDS:      "); SerialMON.println(tds);
-  // }
+  SerialMON.print("Level mm: "); SerialMON.println(level);
+  if (DEVICE_TYPE == DEVICE_WELL) {
+    SerialMON.print("Temp:     "); SerialMON.println(temp);
+    SerialMON.print("TDS:      "); SerialMON.println(tds);
+  }
 
   if (!gsmInit()) { gsmPowerOff(); return; }
 
   if (loadGPS(&s_lat, &s_lon)) {
-    // SerialMON.print("GPS from EEPROM: ");
-    // SerialMON.print(s_lat, 6); SerialMON.print(", "); SerialMON.println(s_lon, 6);
+    SerialMON.print("GPS from EEPROM: ");
+    SerialMON.print(s_lat, 6); SerialMON.print(", "); SerialMON.println(s_lon, 6);
   } else {
-    // SerialMON.println("No GPS in EEPROM, acquiring fix...");
+    SerialMON.println("No GPS in EEPROM, acquiring fix...");
     simcom.enableGPS();
     uint32_t t0 = millis();
     bool got = false;
     while (millis() - t0 < GPS_FIX_TIMEOUT_MS) {
       if (simcom.getGPS(&s_lat, &s_lon)) {
-        saveGPS(s_lat, s_lon);
         got = true;
         break;
       }
@@ -350,18 +370,19 @@ static void normalDataMode() {
     }
     simcom.disableGPS();
     if (!got) {
-      // SerialMON.println("GPS fix failed, skip send");
+      SerialMON.println("GPS fix failed, skip send");
       s_lat = 40.08111;
       s_lon = 65.9059;
     }
+    saveGPS(s_lat, s_lon);
   }
 
   uint8_t  batt = simcom.getBattPercent();
   uint8_t  rssi = simcom.getRSSI();
   uint32_t ts   = simcom.getUnixTime();
 
-  // SerialMON.print("Batt%: "); SerialMON.println(batt);
-  // SerialMON.print("RSSI:  "); SerialMON.println(rssi);
+  SerialMON.print("Batt%: "); SerialMON.println(batt);
+  SerialMON.print("RSSI:  "); SerialMON.println(rssi);
 
   sendData(s_lat, s_lon, batt, rssi, tds, temp, level, ts);
 
@@ -377,25 +398,40 @@ void setup() {
   pinMode(V42_PWR_PIN, OUTPUT);
   pinMode(GSM_PWR_PIN, OUTPUT);
   pinMode(WKUP_PIN, INPUT_PULLUP);
+  pinMode(TDS_PIN, INPUT_ANALOG);
+  pinMode(NTC_PIN, INPUT_ANALOG);
+  pinMode(LVL_ADC_PIN, INPUT_ANALOG);
+  pinMode(MAH_ADC_PIN, INPUT_ANALOG);
 
+  analogReadResolution(12);  // 0-4095
 
   digitalWrite(V33_PWR_PIN, LOW);
   digitalWrite(V42_PWR_PIN, LOW);
   digitalWrite(GSM_PWR_PIN, LOW);
 
-  // SerialMON.begin(115200);
+  SerialMON.begin(115200);
   SerialSIM.begin(115200);
   LowPower.begin();
-  // SerialMON.println("\n--- BOOT ---");
+  SerialMON.println("\n--- BOOT ---");
 
   EEPROM.begin();
   if (digitalRead(WKUP_PIN) == LOW) {
     EEPROM.put(EEPROM_MAGIC, 0x00);
   }
 
-  normalDataMode();
+  // normalDataMode();
 
-  goSleep(SLEEP_MS);
+  // goSleep(SLEEP_MS);
+  // delay(SLEEP_MS);
 }
 
-void loop() {}
+void loop() {
+  uint32_t level = readWaterLevel();
+  float    temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
+  SerialMON.print("\n\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\nTemp °C: "); SerialMON.println(temp);
+  float tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN, temp) : 0.0;
+  SerialMON.print("TDS ppm:  "); SerialMON.println(tds, 2);
+  level          = (DEVICE_TYPE == DEVICE_WELL) ? readWaterLevelFromADC(LVL_ADC_PIN) : 0; 
+  SerialMON.print("Level mm: "); SerialMON.println(level);
+  delay(5000);
+}

@@ -102,6 +102,7 @@ uint8_t SIM7000G::begin(uint32_t baudrate) {
 
   _responseOK("ATE0");
   _responseOK("AT+CFUN=1");
+  _responseOK("AT+CNMP=13");
   _responseOK("AT+CLTS=1");
   _responseOK("AT+CSCLK=0");
   _responseOK("AT+SAPBR=0,1");
@@ -160,6 +161,7 @@ uint8_t SIM7000G::getRSSI() {
 
 String SIM7000G::getIMEI() {
   // Bufer tozalash
+  delay(5000);
   while (_serial.available()) { _serial.read(); }
 
   _imei = "";  // eski qiymatni tiklash
@@ -167,26 +169,28 @@ String SIM7000G::getIMEI() {
   _serial.flush();
 
   uint32_t t = millis();
-  while (millis() - t < 2000) {
+  while (millis() - t < 5000) {
     if (_serial.available()) {
       String line = _serial.readStringUntil('\n');
       line.trim();
 
       if (line.length() == 0) continue;           // bo'sh qator
       if (line.startsWith("AT")) continue;        // echo
-      if (line == "OK" || line == "ERROR") break; // javob tugadi
+      if (line == "OK" || line == "ERROR") continue; // javob tugadi
 
       // IMEI aniq 15 ta raqam bo'lishi kerak
       if (line.length() == 15) {
         bool allDigits = true;
         for (uint8_t i = 0; i < line.length(); i++) {
-          if (!isDigit(line.charAt(i))) { allDigits = false; break; }
+          if (!isDigit(line.charAt(i))) { allDigits = false;}
         }
-        if (allDigits) _imei = line;
+        if (allDigits) {
+          _imei = line;
+          break;
+        }
       }
     }
   }
-
   if (_debug) { _debug->print("IMEI: "); _debug->println(_imei); }
   return _imei;
 }
