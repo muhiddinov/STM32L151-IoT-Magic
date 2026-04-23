@@ -264,7 +264,7 @@ float readNTC_celsius(uint8_t adc_pin) {
 
 static bool gsmInit() {
   gsmPowerOn();
-  uint8_t res = simcom.begin(9600);
+  uint8_t res = simcom.begin(115200);
   if (res == 10) {  // errors::timeout — modem not responding
     // SerialMON.println("GSM: no modem, skip");
     return false;
