@@ -155,9 +155,7 @@ uint32_t readWaterLevelFromADC(uint8_t adc_pin) {
   for (uint8_t x = 0; x < simple_count; x++) {
     adc_avg = (adc_avg + analogRead(adc_pin)) / 2;
   }
-  SerialMON.print("ADC avg: "); SerialMON.println(adc_avg);
   uint32_t voltage = uint32_t(float(adc_avg / 4096.0) * 3300);  // ADC ni voltga aylantirish (mV)
-  SerialMON.print("Voltage: "); SerialMON.println(voltage);
   // Sensor voltage 12VDC
   // Shunt resistor value is 150 ohm
   // I = U/R -> R_min = 4mA = 0.004A and R_max = 20mA = 0.02A
@@ -168,113 +166,130 @@ uint32_t readWaterLevelFromADC(uint8_t adc_pin) {
   return map(voltage, 600, 3000, 0, 5000);
 }
 
-float readTDS(uint8_t adc_pin, float temperature_C = 25.0) {
-    // --- Sxema konstantalari (haqiqiy sxemadan) ---
-    const float V_CC         = 3.0;        // Dual supply (±3.0V), not ADC_VREF
-    const float G_DRIVER     = 0.068;      // R48/R49 = 6.8k/100k  (U14.1)
-    const float V_TDS_N_PK   = G_DRIVER * V_CC / 2.0;  // ≈ 0.102 V peak
-    const float G_SENSE      = 100.0;      // R57/R54 = 1M/10k  (U14.3 gain!)
-    const float R_SENSE      = 5600.0;     // R53 (Ω)
-    const float RECT_COEFF   = 0.6366;     // 2/π (full-wave DC mean)
-    const int   SAMPLES      = 64;
 
-    // --- Tuz koeffitsienti (25°C da) ---
-    const float SALT_EC_PER_GL = 2000.0;   // NaCl; NaOH uchun 5500
-    
-    digitalWrite(V33_PWR_PIN, HIGH);
-    delay(1000);
-    
-    // 1. ADC ni o'rtacha qiymatda o'qish
-    long sum = 0;
-    for (int i = 0; i < SAMPLES; i++) {
-        sum += analogRead(adc_pin);
-        delayMicroseconds(100);
+// ================================================================
+//  Median filter funksiyasi (yordamchi)
+// ================================================================
+int getMedianNum(int bArray[], int iFilterLen) {
+    int bTab[iFilterLen];
+    for (byte i = 0; i < iFilterLen; i++) {
+        bTab[i] = bArray[i];
     }
-    float adc_avg = (float)sum / SAMPLES;
-    float v_adc = (adc_avg / ADC_MAX_VALUE) * ADC_VREF;
-    
-    SerialMON.print("V_ADC:       "); SerialMON.print(v_adc, 4); SerialMON.println(" V");
-    
-    if (v_adc < 0.005) {
-        digitalWrite(V33_PWR_PIN, LOW);
-        return 0.0;
+    int i, j, bTemp;
+    // Bubble sort
+    for (j = 0; j < iFilterLen - 1; j++) {
+        for (i = 0; i < iFilterLen - j - 1; i++) {
+            if (bTab[i] > bTab[i + 1]) {
+                bTemp = bTab[i];
+                bTab[i] = bTab[i + 1];
+                bTab[i + 1] = bTemp;
+            }
+        }
     }
-    
-    // 2. Rectifier koeffitsientini qaytarish (DC o'rtacha → AC peak)
-    float v_rect_pk = v_adc / RECT_COEFF;
-    
-    // 3. U14.3 gain ni qaytarish (100 marta kamaytirish)
-    float v_tds_p = v_rect_pk / G_SENSE;
-    SerialMON.print("V_TDS_P:     "); SerialMON.print(v_tds_p * 1000, 2); SerialMON.println(" mV");
-    
-    // 4. Qisqa tutashuv himoyasi
-    if (v_tds_p >= V_TDS_N_PK) {
-        SerialMON.println("OGOHLANTIRISH: qisqa tutashuv?");
-        digitalWrite(V33_PWR_PIN, LOW);
-        return 0.0;
+    // Median qiymatni qaytarish
+    if ((iFilterLen & 1) > 0) {
+        bTemp = bTab[(iFilterLen - 1) / 2];
+    } else {
+        bTemp = (bTab[iFilterLen / 2] + bTab[iFilterLen / 2 - 1]) / 2;
     }
-    
-    // 5. Voltage divider formulasidan R_probe
-    float r_probe = R_SENSE * (V_TDS_N_PK / v_tds_p - 1.0);
-    SerialMON.print("R_probe:     "); SerialMON.print(r_probe, 1); SerialMON.println(" Ohm");
-    
-    if (r_probe <= 0.0 || r_probe > 1.0e7) {
-        digitalWrite(V33_PWR_PIN, LOW);
-        return 0.0;
-    }
-    
-    // 6. R_probe → EC (µS/cm)
-    float ec_uS_cm = (K_CELL / r_probe) * 1.0e6;
-    
-    // 7. Temperatura kompensatsiyasi (25°C ga keltirish)
-    float ec_25 = ec_uS_cm / (1.0 + 0.02 * (temperature_C - 25.0));
-    SerialMON.print("EC @25°C:    "); SerialMON.print(ec_25, 1); SerialMON.println(" uS/cm");
-    
-    // 8. EC → Konsentratsiya (g/L)
-    float concentration_g_L = ec_25 / SALT_EC_PER_GL;
-    SerialMON.print("Conc:        "); SerialMON.print(concentration_g_L, 4); SerialMON.println(" g/L");
-    
-    digitalWrite(V33_PWR_PIN, LOW);
-    return concentration_g_L;
+    return bTemp;
 }
 
+
+float readTDS(uint8_t adc_pin, float temperature_C = 25.0) {
+    const int   SAMPLES        = 30;
+    const int   SAMPLE_DELAY   = 40;
+    
+    // ===== KALIBROVKA =====
+    // Empirik o'lchov (aniq rezistor qiymatlari bilan):
+    //   985 Ω  → 421 ppm (kutilgan 507.6) → koef 1.206
+    //   9850 Ω → 43 ppm  (kutilgan 50.8)  → koef 1.181
+    //   O'rtacha: 1.19
+    const float CALIB_GAIN = 1.19;
+    
+    // --- 1. Median bilan ADC o'qish ---
+    int analogBuffer[SAMPLES];
+    for (int i = 0; i < SAMPLES; i++) {
+        analogBuffer[i] = analogRead(adc_pin);
+        delay(SAMPLE_DELAY);
+    }
+    int median_raw = getMedianNum(analogBuffer, SAMPLES);
+    
+    // --- 2. ADC → Voltage ---
+    float averageVoltage = ((float)median_raw / ADC_MAX_VALUE) * ADC_VREF;
+    SerialMON.print("ADC median: "); SerialMON.println(median_raw);
+    SerialMON.print("Voltage:    "); SerialMON.print(averageVoltage, 4); SerialMON.println(" V");
+    
+    // --- 3. Temperatura kompensatsiyasi ---
+    float compensationCoefficient = 1.0 + 0.02 * (temperature_C - 25.0);
+    float compensationVoltage = averageVoltage / compensationCoefficient;
+    SerialMON.print("Comp. V:    "); SerialMON.print(compensationVoltage, 4); SerialMON.println(" V");
+    
+    // --- 4. Kub polinom + kalibrovka ---
+    float V = compensationVoltage;
+    float tdsValue = (133.42 * V * V * V 
+                    - 255.86 * V * V 
+                    + 857.39 * V) * 0.5 * CALIB_GAIN;
+    
+    SerialMON.print("TDS:        "); SerialMON.print(tdsValue, 1); SerialMON.println(" ppm");
+    
+    return tdsValue;
+}
+
+// ================================================================
+//  NTC HARORAT FUNKSIYASI (median filter bilan)
+// ================================================================
 float readNTC_celsius(uint8_t adc_pin) {
-  // --- Sxema va NTC parametrlari ---
-  const float ADC_MAX    = 4095.0;   // ESP32 12-bit; Arduino UNO uchun 1023.0
-  const float R_FIXED    = 10000.0;  // Yuqoridagi rezistor — 10 kΩ
-  const float R_NOMINAL  = 10000.0;  // NTC qarshiligi 25°C da — 10 kΩ
-  const float T_NOMINAL  = 298.15;   // 25°C Kelvinda (25 + 273.15)
-  const float BETA       = 3950.0;   // Beta koeffitsient (NTC datasheet dan!)
-  const int   SAMPLES    = 32;
-  digitalWrite(V33_PWR_PIN, HIGH);
-  delay(1000);  // NTC va ADC zanjirini barqarorlashtirish uchun
-
-  // --- 1-qadam: Shovqinni kamaytirish uchun o'rtacha ADC ---
-  long sum = 0;
-  for (int i = 0; i < SAMPLES; i++) {
-    sum += analogRead(adc_pin);
-    delayMicroseconds(100);
-  }
-  float adc_avg = (float)sum / SAMPLES;
-
-  // --- 2-qadam: ADC → Volt ---
-  float v_adc = (adc_avg / ADC_MAX) * ADC_VREF;
-  // Himoya: NTC uzilgan (V ≈ 3.3V) yoki qisqa tutashuv (V ≈ 0V)
-  if (v_adc < 0.01 || v_adc > ADC_VREF - 0.01) return NAN;
-
-  // --- 3-qadam: NTC qarshiligi (voltage divider teskarisi) ---
-  // Sxema: 3V3 → R_FIXED → ADC_PIN → NTC → GND
-  // V_adc = V_supply × R_ntc / (R_fixed + R_ntc)
-  // ⇒ R_ntc = R_fixed × V_adc / (V_supply − V_adc)
-  float r_ntc = R_FIXED * v_adc / (ADC_VREF - v_adc);
-
-  // --- 4-qadam: Beta formulasi ---
-  // 1/T = 1/T₀ + (1/β) × ln(R/R₀),   T Kelvinda
-  float t_kelvin = 1.0 / (1.0/T_NOMINAL + log(r_ntc/R_NOMINAL) / BETA);
-
-  // --- 5-qadam: Kelvin → Celsius ---
-  digitalWrite(V33_PWR_PIN, LOW);
-  return t_kelvin - 273.15;
+    // --- Sxema va NTC parametrlari ---
+    const float R_FIXED    = 10000.0;  // Yuqoridagi rezistor — 10 kΩ
+    const float R_NOMINAL  = 10000.0;  // NTC qarshiligi 25°C da — 10 kΩ
+    const float T_NOMINAL  = 298.15;   // 25°C Kelvinda (25 + 273.15)
+    const float BETA       = 3950.0;   // Beta koeffitsient (NTC datasheet dan!)
+    const int   SAMPLES    = 31;       // toq son — median uchun afzal
+    const int   SAMPLE_DELAY_US = 200; // mikrosekund, namunalar orasida
+    
+    // digitalWrite(V33_PWR_PIN, HIGH);
+    // delay(100);  // NTC va ADC zanjirini barqarorlashtirish uchun
+    
+    // --- 1-qadam: SAMPLES ta namuna olish ---
+    int analogBuffer[SAMPLES];
+    for (int i = 0; i < SAMPLES; i++) {
+        analogBuffer[i] = analogRead(adc_pin);
+        delayMicroseconds(SAMPLE_DELAY_US);
+    }
+    
+    // --- 2-qadam: Median filter bilan o'rta qiymatni olish ---
+    int median_raw = getMedianNum(analogBuffer, SAMPLES);
+    
+    // --- 3-qadam: ADC → Volt ---
+    float v_adc = ((float)median_raw / ADC_MAX_VALUE) * ADC_VREF;
+    
+    // Himoya: NTC uzilgan (V ≈ VREF) yoki qisqa tutashuv (V ≈ 0V)
+    if (v_adc < 0.01 || v_adc > ADC_VREF - 0.01) {
+        SerialMON.println("NTC XATO: uzilgan yoki qisqa tutashuv");
+        // digitalWrite(V33_PWR_PIN, LOW);
+        return NAN;
+    }
+    
+    // --- 4-qadam: NTC qarshiligi (voltage divider teskarisi) ---
+    // Sxema: VREF → R_FIXED → ADC_PIN → NTC → GND
+    // V_adc = V_supply × R_ntc / (R_fixed + R_ntc)
+    // ⇒ R_ntc = R_fixed × V_adc / (V_supply − V_adc)
+    float r_ntc = R_FIXED * v_adc / (ADC_VREF - v_adc);
+    
+    // --- 5-qadam: Beta formulasi (Steinhart-Hart soddalashtirilgan) ---
+    // 1/T = 1/T₀ + (1/β) × ln(R/R₀),   T Kelvinda
+    float t_kelvin = 1.0 / (1.0/T_NOMINAL + log(r_ntc/R_NOMINAL) / BETA);
+    
+    // --- 6-qadam: Kelvin → Celsius ---
+    float t_celsius = t_kelvin - 273.15;
+    
+    SerialMON.print("NTC ADC:    "); SerialMON.println(median_raw);
+    SerialMON.print("NTC R:      "); SerialMON.print(r_ntc, 0); SerialMON.println(" Ohm");
+    SerialMON.print("Temp:       "); SerialMON.print(t_celsius, 2); SerialMON.println(" °C");
+    
+    // digitalWrite(V33_PWR_PIN, LOW);
+    return t_celsius;
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -338,7 +353,8 @@ static void sendData(float lat, float lon,
 
 static void normalDataMode() {
   SerialMON.println("=== NORMAL DATA ===");
-
+  digitalWrite(V33_PWR_PIN, HIGH);
+  delay(1000);
   uint32_t level = readWaterLevel();
   float    temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
   SerialMON.print("Temp °C: "); SerialMON.println(temp);
@@ -350,6 +366,8 @@ static void normalDataMode() {
     SerialMON.print("Temp:     "); SerialMON.println(temp);
     SerialMON.print("TDS:      "); SerialMON.println(tds);
   }
+  
+  digitalWrite(V33_PWR_PIN, LOW);
 
   if (!gsmInit()) { gsmPowerOff(); return; }
 
@@ -405,7 +423,7 @@ void setup() {
 
   analogReadResolution(12);  // 0-4095
 
-  digitalWrite(V33_PWR_PIN, LOW);
+  digitalWrite(V33_PWR_PIN, HIGH);
   digitalWrite(V42_PWR_PIN, LOW);
   digitalWrite(GSM_PWR_PIN, LOW);
 
@@ -427,11 +445,9 @@ void setup() {
 
 void loop() {
   uint32_t level = readWaterLevel();
-  float    temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
-  SerialMON.print("\n\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\nTemp °C: "); SerialMON.println(temp);
-  float tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN, temp) : 0.0;
-  SerialMON.print("TDS ppm:  "); SerialMON.println(tds, 2);
-  level          = (DEVICE_TYPE == DEVICE_WELL) ? readWaterLevelFromADC(LVL_ADC_PIN) : 0; 
-  SerialMON.print("Level mm: "); SerialMON.println(level);
+  SerialMON.print("\n\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+  float temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
+  float tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN) : 0.0;
+  level       = (DEVICE_TYPE == DEVICE_WELL) ? readWaterLevelFromADC(LVL_ADC_PIN) : 0; 
   delay(5000);
 }
