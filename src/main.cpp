@@ -37,6 +37,7 @@ int     DEVICE_TYPE  =  DEVICE_WELL;   // <-- change to DEVICE_CANAL for canal
 #define GPS_FIX_TIMEOUT_MS 120000UL   // first-boot GPS acquisition budget
 
 #define URL_SERVER     "http://aka.org.uz:7000/api/variable?"
+#define URL_SERVER2     "http://hh-water.org:7000/api/variable?"
 
 // ─── EEPROM layout ───────────────────────────────────────────────
 #define EEPROM_LAT     0   // float – 4 bytes
@@ -122,50 +123,37 @@ static bool loadGPS(float* lat, float* lon) {
 
 // Returns water level in mm (ultrasonic UART sensor)
 static uint16_t readWaterLevel() {
-  // SerialUS.begin(9600);
-  // digitalWrite(V33_PWR_PIN, HIGH);
-  // delay(1500);
+  SerialMON.end();
+  delay(100);
+  SerialMON.begin(9600);
+  digitalWrite(V33_PWR_PIN, HIGH);
+  delay(1500);
 
-  // uint32_t sum = 0;
-  // uint8_t  cnt = 0;
-  // uint8_t  buf[3];
-  // uint32_t t = millis();
+  uint32_t sum = 0;
+  uint8_t  cnt = 0;
+  uint8_t  buf[3];
+  uint32_t t = millis();
 
-  // while (millis() - t < 5000) {
-  //   if (SerialUS.available()) {
-  //     uint8_t head = SerialUS.read();
-  //     if (head != 0xFF) continue;           // wait for frame start
-  //     if (SerialUS.readBytes(buf, 3) == 3) {
-  //       uint16_t d = ((uint16_t)buf[0] << 8) | buf[1];
-  //       uint8_t  cs = (0xFF + buf[0] + buf[1]) & 0xFF;
-  //       if (cs == buf[2] && d > 0) { sum += d; cnt++; }
-  //     }
-  //     DEVICE_TYPE = DEVICE_CANAL;
-  //   }
-  // }
-  // digitalWrite(V33_PWR_PIN, LOW);
-  // return (cnt > 0) ? (uint16_t)(sum / cnt) : 0;
-  return 0;
-}
-
-uint32_t readWaterLevelFromADC(uint8_t adc_pin) {
-  // read 4-20mA sensor
-  uint32_t adc_avg = 0;
-  uint8_t simple_count = 30;
-  for (uint8_t x = 0; x < simple_count; x++) {
-    adc_avg = (adc_avg + analogRead(adc_pin)) / 2;
+  while (millis() - t < 5000) {
+    if (SerialMON.available()) {
+      uint8_t head = SerialMON.read();
+      if (head != 0xFF) continue;           // wait for frame start
+      if (SerialMON.readBytes(buf, 3) == 3) {
+        uint16_t d = ((uint16_t)buf[0] << 8) | buf[1];
+        uint8_t  cs = (0xFF + buf[0] + buf[1]) & 0xFF;
+        if (cs == buf[2] && d > 0) { sum += d; cnt++; }
+      }
+      DEVICE_TYPE = DEVICE_CANAL;
+    }
   }
-  uint32_t voltage = uint32_t(float(adc_avg / 4096.0) * 3300);  // ADC ni voltga aylantirish (mV)
-  // Sensor voltage 12VDC
-  // Shunt resistor value is 150 ohm
-  // I = U/R -> R_min = 4mA = 0.004A and R_max = 20mA = 0.02A
-  // U_min = 0.004 * 150 = 0.6V
-  // U_max = 0.02 * 150 = 3.0V
-  // Sensor measure values from 0 - 5000mm
-  // from 600mV to 3000mV equal to [0-5000]
-  return map(voltage, 600, 3000, 0, 5000);
+  digitalWrite(V33_PWR_PIN, LOW);
+  SerialMON.end();
+  delay(100);
+  SerialMON.begin(115200);
+  SerialMON.printf("Water level readings: %d, average: %d mm\n", cnt, uint16_t(sum / cnt));
+  delay(5000);
+  return (cnt > 0) ? (uint16_t)(sum / cnt) : 0;
 }
-
 
 // ================================================================
 //  Median filter funksiyasi (yordamchi)
@@ -193,6 +181,23 @@ int getMedianNum(int bArray[], int iFilterLen) {
         bTemp = (bTab[iFilterLen / 2] + bTab[iFilterLen / 2 - 1]) / 2;
     }
     return bTemp;
+}
+
+
+uint16_t readWaterLevelFromADC(uint8_t adc_pin) {
+  // read 4-20mA sensor
+  uint32_t adc_avg = 0;
+  uint8_t simple_count = 30;
+  int analogBuffer[simple_count];
+  for (uint8_t x = 0; x < simple_count; x++) {
+    analogBuffer[x] = analogRead(adc_pin);
+    delay(40);
+  }
+  adc_avg = getMedianNum(analogBuffer, simple_count);
+  uint32_t voltage = uint32_t(float(adc_avg / 4096.0) * 3300);
+  if (voltage < 600) voltage = 600;   // 4mA dan pastga o'qishlarni himoya qilish
+  if (voltage > 3000) voltage = 3000; // 20mA dan yuqori o'qishlarni himoya qilish
+  return map(voltage, 600, 3000, 0, 5000);
 }
 
 
@@ -248,8 +253,8 @@ float readNTC_celsius(uint8_t adc_pin) {
     const int   SAMPLES    = 31;       // toq son — median uchun afzal
     const int   SAMPLE_DELAY_US = 200; // mikrosekund, namunalar orasida
     
-    // digitalWrite(V33_PWR_PIN, HIGH);
-    // delay(100);  // NTC va ADC zanjirini barqarorlashtirish uchun
+    digitalWrite(V33_PWR_PIN, HIGH);
+    delay(100);  // NTC va ADC zanjirini barqarorlashtirish uchun
     
     // --- 1-qadam: SAMPLES ta namuna olish ---
     int analogBuffer[SAMPLES];
@@ -288,7 +293,7 @@ float readNTC_celsius(uint8_t adc_pin) {
     SerialMON.print("NTC R:      "); SerialMON.print(r_ntc, 0); SerialMON.println(" Ohm");
     SerialMON.print("Temp:       "); SerialMON.print(t_celsius, 2); SerialMON.println(" °C");
     
-    // digitalWrite(V33_PWR_PIN, LOW);
+    digitalWrite(V33_PWR_PIN, LOW);
     return t_celsius;
 }
 
@@ -298,7 +303,7 @@ float readNTC_celsius(uint8_t adc_pin) {
 
 static bool gsmInit() {
   gsmPowerOn();
-  uint8_t res = simcom.begin(115200);
+  uint8_t res = simcom.begin(9600);
   if (res == 10) {  // errors::timeout — modem not responding
     SerialMON.println("GSM: no modem, skip");
     return false;
@@ -343,6 +348,20 @@ static void sendData(float lat, float lon,
       latStr, lonStr, batt, rssi, levelStr, (unsigned long)ts);
   }
   simcom.httpGet(url);
+  if (DEVICE_TYPE == DEVICE_WELL) {
+    snprintf(url, sizeof(url),
+      "%simei=%s&lat=%s&long=%s&battery=%d&rssi=%d"
+      "&tds=%s&temp_water=%s&level_water=%s&datetime=%lu&type=well",
+      URL_SERVER2, s_imei.c_str(),
+      latStr, lonStr, batt, rssi, tdsStr, tempStr, levelStr, (unsigned long)ts);
+  } else {
+    snprintf(url, sizeof(url),
+      "%simei=%s&lat=%s&long=%s&battery=%d&rssi=%d"
+      "&level_water=%s&datetime=%lu&type=canal",
+      URL_SERVER2, s_imei.c_str(),
+      latStr, lonStr, batt, rssi, levelStr, (unsigned long)ts);
+  }
+  simcom.httpGet(url);
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -355,16 +374,13 @@ static void normalDataMode() {
   SerialMON.println("=== NORMAL DATA ===");
   digitalWrite(V33_PWR_PIN, HIGH);
   delay(1000);
-  uint32_t level = readWaterLevel();
-  float    temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
-  SerialMON.print("Temp °C: "); SerialMON.println(temp);
-  float tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN, temp) : 0.0;
-  SerialMON.print("TDS ppm:  "); SerialMON.println(tds, 2);
-  level          = (DEVICE_TYPE == DEVICE_WELL) ? readWaterLevelFromADC(LVL_ADC_PIN) : 0; 
-  SerialMON.print("Level mm: "); SerialMON.println(level);
+  uint16_t level = readWaterLevel();
+  float temp  = 0.0;
+  float tds = 0.0;
   if (DEVICE_TYPE == DEVICE_WELL) {
-    SerialMON.print("Temp:     "); SerialMON.println(temp);
-    SerialMON.print("TDS:      "); SerialMON.println(tds);
+    temp  = readNTC_celsius(NTC_PIN);
+    tds   =  readTDS(TDS_PIN, temp);
+    level       = readWaterLevelFromADC(LVL_ADC_PIN); 
   }
   
   digitalWrite(V33_PWR_PIN, LOW);
@@ -428,7 +444,6 @@ void setup() {
   digitalWrite(GSM_PWR_PIN, LOW);
 
   SerialMON.begin(115200);
-  SerialSIM.begin(115200);
   LowPower.begin();
   SerialMON.println("\n--- BOOT ---");
 
@@ -437,17 +452,19 @@ void setup() {
     EEPROM.put(EEPROM_MAGIC, 0x00);
   }
 
-  // normalDataMode();
+  normalDataMode();
 
-  // goSleep(SLEEP_MS);
-  // delay(SLEEP_MS);
+  goSleep(SLEEP_MS);
+  delay(SLEEP_MS);
 }
 
 void loop() {
-  uint32_t level = readWaterLevel();
-  SerialMON.print("\n\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
-  float temp  = (DEVICE_TYPE == DEVICE_WELL) ? readNTC_celsius(NTC_PIN) : 0;
-  float tds   = (DEVICE_TYPE == DEVICE_WELL) ? readTDS(TDS_PIN) : 0.0;
-  level       = (DEVICE_TYPE == DEVICE_WELL) ? readWaterLevelFromADC(LVL_ADC_PIN) : 0; 
-  delay(5000);
+  // uint32_t level = readWaterLevel();
+  // if (DEVICE_TYPE == DEVICE_WELL) {
+  //   SerialMON.print("\n\n++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++++\n");
+  //   float temp  = readNTC_celsius(NTC_PIN);
+  //   float tds   = readTDS(TDS_PIN);
+  //   level       = readWaterLevelFromADC(LVL_ADC_PIN); 
+  //   delay(5000);
+  // }
 }
