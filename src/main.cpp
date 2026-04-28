@@ -273,7 +273,7 @@ float readNTC_celsius(uint8_t adc_pin) {
     if (v_adc < 0.01 || v_adc > ADC_VREF - 0.01) {
         SerialMON.println("NTC XATO: uzilgan yoki qisqa tutashuv");
         // digitalWrite(V33_PWR_PIN, LOW);
-        return NAN;
+        return 0.0; // yoki -127.0 kabi maxsus qiymat qaytarish mumkin
     }
     
     // --- 4-qadam: NTC qarshiligi (voltage divider teskarisi) ---
@@ -379,8 +379,8 @@ static void normalDataMode() {
   float tds = 0.0;
   if (DEVICE_TYPE == DEVICE_WELL) {
     temp  = readNTC_celsius(NTC_PIN);
-    tds   =  readTDS(TDS_PIN, temp);
-    level       = readWaterLevelFromADC(LVL_ADC_PIN); 
+    tds   =  readTDS(TDS_PIN, (temp > 0.0) ? temp : 25.0); // NTC o'qish muvaffaqiyatsiz bo'lsa, 25°C deb taxmin qilamiz
+    level = readWaterLevelFromADC(LVL_ADC_PIN); 
   }
   
   digitalWrite(V33_PWR_PIN, LOW);
